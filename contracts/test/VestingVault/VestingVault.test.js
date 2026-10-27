@@ -293,8 +293,9 @@ describe("VestingVault with Sanctions Oracle and KPI Multiplier", function () {
 
     describe("Tax Withholding", function () {
         it("Accumulates tax without losing stroops across multiple small claims", async function () {
-            // Deploy a tax authority account
-            const taxAuthority = owner;
+            // Deploy a dedicated tax authority account with zero initial token balance
+            const signers = await ethers.getSigners();
+            const taxAuthority = signers[5];
 
             // Create a new grant with a non-zero tax rate (e.g., 123 bps = 1.23%)
             const startTime = (await ethers.provider.getBlock("latest")).timestamp;

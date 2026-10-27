@@ -93,6 +93,19 @@ MAPPINGS = [
         "name": "VestingVault",
         "rust": ROOT / "contracts" / "vesting_vault" / "src" / "lib.rs",
         "solidity": ROOT / "contracts" / "interfaces" / "IVestingVault.sol",
+        "evm_impl": ROOT / "contracts" / "src" / "VestingVault" / "VestingVault.sol",
+    },
+    {
+        "name": "SanctionsOracle",
+        "rust": None,
+        "solidity": ROOT / "contracts" / "interfaces" / "ISanctionsOracle.sol",
+        "evm_impl": ROOT / "contracts" / "src" / "VestingVault" / "SanctionsOracle.sol",
+    },
+    {
+        "name": "RevenueOracle",
+        "rust": None,
+        "solidity": ROOT / "contracts" / "interfaces" / "IRevenueOracle.sol",
+        "evm_impl": ROOT / "contracts" / "src" / "VestingVault" / "RevenueOracle.sol",
     },
 ]
 
@@ -285,23 +298,45 @@ def generated_skeleton(contract_name: str, functions: list[RustFunction]) -> str
 def validate_mapping(mapping: dict[str, object]) -> tuple[list[str], list[str]]:
     rust_path = mapping["rust"]
     solidity_path = mapping["solidity"]
+    evm_impl_path = mapping.get("evm_impl")
     contract_name = mapping["name"]
-    assert isinstance(rust_path, Path)
+    assert rust_path is None or isinstance(rust_path, Path)
     assert isinstance(solidity_path, Path)
+    assert evm_impl_path is None or isinstance(evm_impl_path, Path)
     assert isinstance(contract_name, str)
 
-    if not rust_path.exists():
-        return [f"{rust_path.relative_to(ROOT)} is missing"], []
     if not solidity_path.exists():
         return [f"{solidity_path.relative_to(ROOT)} is missing"], []
 
-    rust_functions = parse_rust_functions(rust_path)
     solidity_functions = parse_solidity_functions(solidity_path)
-    rust_by_name = {func.name: func for func in rust_functions}
-    rust_by_solidity_name = {snake_to_camel(func.name): func for func in rust_functions}
-
     errors: list[str] = []
     warnings: list[str] = []
+
+    if evm_impl_path is not None:
+        if not evm_impl_path.exists():
+            return [f"{evm_impl_path.relative_to(ROOT)} is missing"], []
+        impl_functions = {fn.name: fn for fn in parse_solidity_functions(evm_impl_path)}
+        for solidity in solidity_functions:
+            impl = impl_functions.get(solidity.name)
+            if impl is None:
+                errors.append(
+                    f"{solidity_path.relative_to(ROOT)}: function {solidity.name} is missing in {evm_impl_path.relative_to(ROOT)}"
+                )
+            elif len(impl.params) != len(solidity.params):
+                errors.append(
+                    f"{solidity_path.relative_to(ROOT)}: function {solidity.name} has {len(solidity.params)} params, "
+                    f"but {evm_impl_path.relative_to(ROOT)} has {len(impl.params)}"
+                )
+
+    if rust_path is None:
+        return errors, warnings
+
+    if not rust_path.exists():
+        return [f"{rust_path.relative_to(ROOT)} is missing"], []
+
+    rust_functions = parse_rust_functions(rust_path)
+    rust_by_name = {func.name: func for func in rust_functions}
+    rust_by_solidity_name = {snake_to_camel(func.name): func for func in rust_functions}
 
     def report(solidity: SolidityFunction, message: str) -> None:
         if solidity.sync_allowed and not STRICT:

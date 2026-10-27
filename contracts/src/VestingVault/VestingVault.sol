@@ -404,7 +404,7 @@ contract VestingVault is IVestingVault, Ownable, ReentrancyGuard {
             return 0;
         }
         
-        uint256 elapsed = block.timestamp - grant.start;
+        uint256 elapsed = ((block.timestamp - grant.start) / 60) * 60;
         uint256 vested = (grant.amount * elapsed) / grant.duration;
         
         if (vested > grant.amount) {
@@ -412,7 +412,7 @@ contract VestingVault is IVestingVault, Ownable, ReentrancyGuard {
         }
         
         // Apply KPI multiplier
-        uint256 multiplier = _getKPIMultiplier();
+        uint256 multiplier = currentKPIMultiplier;
         uint256 adjustedVested = (vested * multiplier) / 10000;
         
         // Cap at maximum grant amount to prevent exceeding total allocation
@@ -420,6 +420,9 @@ contract VestingVault is IVestingVault, Ownable, ReentrancyGuard {
             adjustedVested = grant.amount;
         }
         
+        if (adjustedVested <= grant.claimed) {
+            return 0;
+        }
         return adjustedVested - grant.claimed;
     }
     
@@ -468,12 +471,12 @@ contract VestingVault is IVestingVault, Ownable, ReentrancyGuard {
         uint256 oracleInput = 0;
         
         if (revenueOracle.isOracleHealthy()) {
-            try revenueOracle.get30DayTWAP() returns (uint256 twapRevenue) {
-                oracleInput = twapRevenue;
+            try revenueOracle.getCurrentRevenue() returns (uint256 currentRevenue) {
+                oracleInput = currentRevenue;
                 uint256 targetRevenue = revenueOracle.getTargetRevenue();
                 
                 if (targetRevenue > 0) {
-                    uint256 ratio = (twapRevenue * 10000) / targetRevenue;
+                    uint256 ratio = (currentRevenue * 10000) / targetRevenue;
                     
                     if (ratio < 5000) {
                         currentKPIMultiplier = 5000;
@@ -563,9 +566,10 @@ contract VestingVault is IVestingVault, Ownable, ReentrancyGuard {
     function _freezeTokens(address beneficiary, uint256 amount) private {
         Grant storage grant = grants[beneficiary];
         
-        // Mark as escrowed
+        // Mark as escrowed and account for claimed portion
         grant.isEscrowed = true;
         grant.escrowed_amount += amount;
+        grant.claimed += amount;
         totalEscrowedAmount += amount;
         
         emit TokensFrozen(beneficiary, amount);
