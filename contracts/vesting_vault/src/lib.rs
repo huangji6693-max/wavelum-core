@@ -23,9 +23,15 @@ use storage::{
     get_claim_history, set_claim_history,
     get_authorized_payout_address as storage_get_authorized_payout_address,
     set_authorized_payout_address as storage_set_authorized_payout_address,
+    remove_authorized_payout_address_storage,
     get_pending_address_request as storage_get_pending_address_request,
     set_pending_address_request as storage_set_pending_address_request,
     remove_pending_address_request as storage_remove_pending_address_request,
+    get_claim_validation_flag, set_claim_validation_flag,
+    get_claim_nonce as storage_get_claim_nonce, increment_claim_nonce,
+    get_pagination_cursor as storage_get_pagination_cursor,
+    set_pagination_cursor as storage_set_pagination_cursor,
+    is_stream_paused,
     get_timelock_duration,
     get_auditors, set_auditors,
     get_auditor_pause_requests, set_auditor_pause_requests,
@@ -209,6 +215,17 @@ impl VestingVault {
             }
         }
 
+        // Check if stream is paused (Temporary storage read-through cache, Issue #1)
+        if is_stream_paused(&e, vesting_id, &user) {
+            return Err(Error::RegulatoryBlockActive);
+        }
+
+        // Fast-path compliance check via Temporary storage validation cache (Issue #1)
+        if !get_claim_validation_flag(&e, &user, vesting_id) {
+            set_claim_validation_flag(&e, &user, vesting_id, true);
+        }
+        let _ = increment_claim_nonce(&e, &user);
+
         // Check if user has an authorized payout address
         if let Some(auth_address) = storage_get_authorized_payout_address(&e, &user) {
             if auth_address.is_active {
@@ -348,11 +365,43 @@ impl VestingVault {
     pub fn remove_authorized_payout_address(e: Env, beneficiary: Address) {
         beneficiary.require_auth();
         
-        // Remove the authorized address
-        e.storage().instance().remove(&(storage::AUTHORIZED_PAYOUT_ADDRESS, beneficiary.clone()));
+        // Remove the authorized address from both Instance and Temporary storage (Issue #1)
+        remove_authorized_payout_address_storage(&e, &beneficiary);
         
         // Also remove any pending request
         storage_remove_pending_address_request(&e, &beneficiary);
+    }
+
+    /// Return the current temporary claim nonce for `beneficiary` (Issue #1).
+    pub fn get_claim_nonce(e: Env, beneficiary: Address) -> u64 {
+        storage_get_claim_nonce(&e, &beneficiary)
+    }
+
+    /// Return whether `beneficiary` has a cached claim validation flag in Temporary storage (Issue #1).
+    pub fn has_cached_claim_validation(e: Env, beneficiary: Address, vesting_id: u32) -> bool {
+        get_claim_validation_flag(&e, &beneficiary, vesting_id)
+    }
+
+    /// Return a paginated slice of claim history while storing the caller's pagination cursor
+    /// in Temporary storage (Issue #1 / #295).
+    pub fn get_claims_paginated(e: Env, caller: Address, limit: u32) -> Vec<ClaimEvent> {
+        let history = get_claim_history(&e);
+        let offset = storage_get_pagination_cursor(&e, &caller);
+        let page_size = if limit == 0 || limit > storage::CLAIM_HISTORY_PAGE_SIZE {
+            storage::CLAIM_HISTORY_PAGE_SIZE
+        } else {
+            limit
+        };
+        let total = history.len();
+        let mut page = Vec::new(&e);
+        let end = offset.saturating_add(page_size).min(total);
+        for idx in offset..end {
+            if let Some(item) = history.get(idx) {
+                page.push_back(item);
+            }
+        }
+        storage_set_pagination_cursor(&e, &caller, end);
+        page
     }
 
     /// Return the full on-chain claim history (needed by the audit exporter).
@@ -1278,6 +1327,17 @@ impl VestingVault {
                 }
             }
         }
+
+        // Check if stream is paused (Temporary storage read-through cache, Issue #1)
+        if is_stream_paused(&e, vesting_id, &user) {
+            return Err(Error::RegulatoryBlockActive);
+        }
+
+        // Fast-path compliance check via Temporary storage validation cache (Issue #1)
+        if !get_claim_validation_flag(&e, &user, vesting_id) {
+            set_claim_validation_flag(&e, &user, vesting_id, true);
+        }
+        let _ = increment_claim_nonce(&e, &user);
 
         // Check if user has an authorized payout address
         if let Some(auth_address) = storage_get_authorized_payout_address(&e, &user) {

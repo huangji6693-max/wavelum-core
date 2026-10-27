@@ -60,6 +60,18 @@ const TIMELOCK_DURATION: u64 = 172_800;
 // 7 days in seconds for emergency pause
 const EMERGENCY_PAUSE_DURATION: u64 = 604_800;
 
+/// Default TTL (in ledgers) for short-lived Temporary storage entries (Issue #1).
+pub const TEMPORARY_TTL_LEDGERS: u32 = 10;
+/// Threshold (in ledgers) at which Temporary storage TTL is refreshed.
+pub const TEMPORARY_TTL_THRESHOLD: u32 = 5;
+
+/// Temporary storage keys for per-invocation / short-lived high-frequency reads (Issue #1).
+pub const CLAIM_VALIDATION_CACHE: &str = "CLAIM_VALIDATION_CACHE";
+pub const CLAIM_NONCE: &str = "CLAIM_NONCE";
+pub const TEMP_AUTHORIZED_PAYOUT_CACHE: &str = "TEMP_AUTH_PAYOUT";
+pub const TEMP_EMERGENCY_PAUSE_CACHE: &str = "TEMP_EMERG_PAUSE";
+pub const TEMP_STREAM_PAUSE_CACHE: &str = "TEMP_STREAM_PAUSE";
+
 pub fn get_claim_history(e: &Env) -> Vec<ClaimEvent> {
     e.storage()
         .instance()
@@ -72,26 +84,65 @@ pub fn set_claim_history(e: &Env, history: &Vec<ClaimEvent>) {
 }
 
 pub fn get_authorized_payout_address(e: &Env, beneficiary: &Address) -> Option<AuthorizedPayoutAddress> {
-    e.storage()
+    let temp_key = (TEMP_AUTHORIZED_PAYOUT_CACHE, beneficiary.clone());
+    if let Some(cached) = e.storage().temporary().get::<_, AuthorizedPayoutAddress>(&temp_key) {
+        e.storage()
+            .temporary()
+            .extend_ttl(&temp_key, TEMPORARY_TTL_THRESHOLD, TEMPORARY_TTL_LEDGERS);
+        return Some(cached);
+    }
+    let stored: Option<AuthorizedPayoutAddress> = e
+        .storage()
         .instance()
-        .get(&(AUTHORIZED_PAYOUT_ADDRESS, beneficiary))
+        .get(&(AUTHORIZED_PAYOUT_ADDRESS, beneficiary));
+    if let Some(ref auth_addr) = stored {
+        e.storage().temporary().set(&temp_key, auth_addr);
+        e.storage()
+            .temporary()
+            .extend_ttl(&temp_key, TEMPORARY_TTL_THRESHOLD, TEMPORARY_TTL_LEDGERS);
+    }
+    stored
 }
 
 pub fn set_authorized_payout_address(e: &Env, beneficiary: &Address, auth_address: &AuthorizedPayoutAddress) {
     e.storage().instance().set(&(AUTHORIZED_PAYOUT_ADDRESS, beneficiary), auth_address);
+    let temp_key = (TEMP_AUTHORIZED_PAYOUT_CACHE, beneficiary.clone());
+    e.storage().temporary().set(&temp_key, auth_address);
+    e.storage()
+        .temporary()
+        .extend_ttl(&temp_key, TEMPORARY_TTL_THRESHOLD, TEMPORARY_TTL_LEDGERS);
+}
+
+pub fn remove_authorized_payout_address_storage(e: &Env, beneficiary: &Address) {
+    e.storage()
+        .instance()
+        .remove(&(AUTHORIZED_PAYOUT_ADDRESS, beneficiary));
+    let temp_key = (TEMP_AUTHORIZED_PAYOUT_CACHE, beneficiary.clone());
+    e.storage().temporary().remove(&temp_key);
 }
 
 pub fn get_pending_address_request(e: &Env, beneficiary: &Address) -> Option<AddressWhitelistRequest> {
+    let key = (PENDING_ADDRESS_REQUEST, beneficiary.clone());
+    if let Some(req) = e.storage().temporary().get::<_, AddressWhitelistRequest>(&key) {
+        return Some(req);
+    }
     e.storage()
         .instance()
-        .get(& (PENDING_ADDRESS_REQUEST, beneficiary))
+        .get(&(PENDING_ADDRESS_REQUEST, beneficiary))
 }
 
 pub fn set_pending_address_request(e: &Env, beneficiary: &Address, request: &AddressWhitelistRequest) {
+    let key = (PENDING_ADDRESS_REQUEST, beneficiary.clone());
+    e.storage().temporary().set(&key, request);
+    e.storage()
+        .temporary()
+        .extend_ttl(&key, TEMPORARY_TTL_THRESHOLD, TEMPORARY_TTL_LEDGERS);
     e.storage().instance().set(&(PENDING_ADDRESS_REQUEST, beneficiary), request);
 }
 
 pub fn remove_pending_address_request(e: &Env, beneficiary: &Address) {
+    let key = (PENDING_ADDRESS_REQUEST, beneficiary.clone());
+    e.storage().temporary().remove(&key);
     e.storage().instance().remove(&(PENDING_ADDRESS_REQUEST, beneficiary));
 }
 
@@ -112,6 +163,13 @@ pub fn set_auditors(e: &Env, auditors: &Vec<Address>) {
 }
 
 pub fn get_auditor_pause_requests(e: &Env) -> Map<Address, crate::emergency::AuditorPauseRequest> {
+    if let Some(requests) = e
+        .storage()
+        .temporary()
+        .get::<_, Map<Address, crate::emergency::AuditorPauseRequest>>(&AUDITOR_PAUSE_REQUESTS)
+    {
+        return requests;
+    }
     e.storage()
         .instance()
         .get(&AUDITOR_PAUSE_REQUESTS)
@@ -119,19 +177,52 @@ pub fn get_auditor_pause_requests(e: &Env) -> Map<Address, crate::emergency::Aud
 }
 
 pub fn set_auditor_pause_requests(e: &Env, requests: &Map<Address, crate::emergency::AuditorPauseRequest>) {
+    e.storage().temporary().set(&AUDITOR_PAUSE_REQUESTS, requests);
+    e.storage()
+        .temporary()
+        .extend_ttl(&AUDITOR_PAUSE_REQUESTS, TEMPORARY_TTL_THRESHOLD, TEMPORARY_TTL_LEDGERS);
     e.storage().instance().set(&AUDITOR_PAUSE_REQUESTS, requests);
 }
 
 pub fn get_emergency_pause(e: &Env) -> Option<crate::emergency::EmergencyPause> {
-    e.storage().instance().get(&EMERGENCY_PAUSE)
+    if let Some(cached) = e
+        .storage()
+        .temporary()
+        .get::<_, crate::emergency::EmergencyPause>(&TEMP_EMERGENCY_PAUSE_CACHE)
+    {
+        e.storage().temporary().extend_ttl(
+            &TEMP_EMERGENCY_PAUSE_CACHE,
+            TEMPORARY_TTL_THRESHOLD,
+            TEMPORARY_TTL_LEDGERS,
+        );
+        return Some(cached);
+    }
+    let stored: Option<crate::emergency::EmergencyPause> =
+        e.storage().instance().get(&EMERGENCY_PAUSE);
+    if let Some(ref pause) = stored {
+        e.storage().temporary().set(&TEMP_EMERGENCY_PAUSE_CACHE, pause);
+        e.storage().temporary().extend_ttl(
+            &TEMP_EMERGENCY_PAUSE_CACHE,
+            TEMPORARY_TTL_THRESHOLD,
+            TEMPORARY_TTL_LEDGERS,
+        );
+    }
+    stored
 }
 
 pub fn set_emergency_pause(e: &Env, pause: &crate::emergency::EmergencyPause) {
     e.storage().instance().set(&EMERGENCY_PAUSE, pause);
+    e.storage().temporary().set(&TEMP_EMERGENCY_PAUSE_CACHE, pause);
+    e.storage().temporary().extend_ttl(
+        &TEMP_EMERGENCY_PAUSE_CACHE,
+        TEMPORARY_TTL_THRESHOLD,
+        TEMPORARY_TTL_LEDGERS,
+    );
 }
 
 pub fn remove_emergency_pause(e: &Env) {
     e.storage().instance().remove(&EMERGENCY_PAUSE);
+    e.storage().temporary().remove(&TEMP_EMERGENCY_PAUSE_CACHE);
 }
 
 // Cross-project reputation functions
@@ -532,21 +623,43 @@ pub fn add_nullifier_to_set(e: &Env, nullifier_hash: &BytesN<32>) {
 
 // Stream pause functions for suspicious activity detection
 pub fn get_stream_pause(e: &Env, vesting_id: u32, beneficiary: &Address) -> Option<StreamPause> {
-    e.storage()
+    let temp_key = (TEMP_STREAM_PAUSE_CACHE, vesting_id, beneficiary.clone());
+    if let Some(cached) = e.storage().temporary().get::<_, StreamPause>(&temp_key) {
+        e.storage()
+            .temporary()
+            .extend_ttl(&temp_key, TEMPORARY_TTL_THRESHOLD, TEMPORARY_TTL_LEDGERS);
+        return Some(cached);
+    }
+    let stored: Option<StreamPause> = e
+        .storage()
         .instance()
-        .get(&(STREAM_PAUSES, vesting_id, beneficiary))
+        .get(&(STREAM_PAUSES, vesting_id, beneficiary));
+    if let Some(ref pause) = stored {
+        e.storage().temporary().set(&temp_key, pause);
+        e.storage()
+            .temporary()
+            .extend_ttl(&temp_key, TEMPORARY_TTL_THRESHOLD, TEMPORARY_TTL_LEDGERS);
+    }
+    stored
 }
 
 pub fn set_stream_pause(e: &Env, vesting_id: u32, beneficiary: &Address, pause: &StreamPause) {
     e.storage()
         .instance()
         .set(&(STREAM_PAUSES, vesting_id, beneficiary), pause);
+    let temp_key = (TEMP_STREAM_PAUSE_CACHE, vesting_id, beneficiary.clone());
+    e.storage().temporary().set(&temp_key, pause);
+    e.storage()
+        .temporary()
+        .extend_ttl(&temp_key, TEMPORARY_TTL_THRESHOLD, TEMPORARY_TTL_LEDGERS);
 }
 
 pub fn remove_stream_pause(e: &Env, vesting_id: u32, beneficiary: &Address) {
     e.storage()
         .instance()
         .remove(&(STREAM_PAUSES, vesting_id, beneficiary));
+    let temp_key = (TEMP_STREAM_PAUSE_CACHE, vesting_id, beneficiary.clone());
+    e.storage().temporary().remove(&temp_key);
 }
 
 pub fn is_stream_paused(e: &Env, vesting_id: u32, beneficiary: &Address) -> bool {
@@ -554,6 +667,50 @@ pub fn is_stream_paused(e: &Env, vesting_id: u32, beneficiary: &Address) -> bool
         return pause.is_active;
     }
     false
+}
+
+/// Per-invocation / short-lived claim validation flag stored in Temporary storage (Issue #1).
+pub fn get_claim_validation_flag(e: &Env, beneficiary: &Address, vesting_id: u32) -> bool {
+    let key = (CLAIM_VALIDATION_CACHE, beneficiary.clone(), vesting_id);
+    e.storage().temporary().get(&key).unwrap_or(false)
+}
+
+pub fn set_claim_validation_flag(e: &Env, beneficiary: &Address, vesting_id: u32, validated: bool) {
+    let key = (CLAIM_VALIDATION_CACHE, beneficiary.clone(), vesting_id);
+    e.storage().temporary().set(&key, &validated);
+    e.storage()
+        .temporary()
+        .extend_ttl(&key, TEMPORARY_TTL_THRESHOLD, TEMPORARY_TTL_LEDGERS);
+}
+
+/// Ephemeral per-beneficiary claim nonce in Temporary storage (Issue #1).
+pub fn get_claim_nonce(e: &Env, beneficiary: &Address) -> u64 {
+    let key = (CLAIM_NONCE, beneficiary.clone());
+    e.storage().temporary().get(&key).unwrap_or(0u64)
+}
+
+pub fn increment_claim_nonce(e: &Env, beneficiary: &Address) -> u64 {
+    let key = (CLAIM_NONCE, beneficiary.clone());
+    let next = get_claim_nonce(e, beneficiary).saturating_add(1);
+    e.storage().temporary().set(&key, &next);
+    e.storage()
+        .temporary()
+        .extend_ttl(&key, TEMPORARY_TTL_THRESHOLD, TEMPORARY_TTL_LEDGERS);
+    next
+}
+
+/// Temporary storage pagination cursor for claim history queries (Issue #1 / #295).
+pub fn get_pagination_cursor(e: &Env, caller: &Address) -> u32 {
+    let key = (PAGINATION_STATE, caller.clone());
+    e.storage().temporary().get(&key).unwrap_or(0u32)
+}
+
+pub fn set_pagination_cursor(e: &Env, caller: &Address, offset: u32) {
+    let key = (PAGINATION_STATE, caller.clone());
+    e.storage().temporary().set(&key, &offset);
+    e.storage()
+        .temporary()
+        .extend_ttl(&key, TEMPORARY_TTL_THRESHOLD, TEMPORARY_TTL_LEDGERS);
 }
 
 pub fn get_stream_pause_history(e: &Env) -> Vec<StreamPause> {
