@@ -1,0 +1,76 @@
+version: 2
+updates:
+  # Cargo workspace root
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "security"
+    reviewers:
+      - "Husten150"
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+    groups:
+      cargo-minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # Cargo member crates
+  - package-ecosystem: "cargo"
+    directories:
+      - "/contracts/vesting_contracts"
+      - "/contracts/grant_contracts"
+      - "/contracts/staking_contract"
+      - "/contracts/vesting_status_nft"
+      - "/contracts/vesting_vault"
+      - "/contracts/deposit_to_yield_adapter"
+      - "/contracts/insurance_treasury"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "security"
+    reviewers:
+      - "Husten150"
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+    groups:
+      soroban-crates-minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # GitHub Actions workflows
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "security"
+    reviewers:
+      - "Husten150"
+    commit-message:
+      prefix: "ci(deps)"
+      include: "scope"
+    groups:
+      github-actions-updates:
+        patterns:
+          - "*"
